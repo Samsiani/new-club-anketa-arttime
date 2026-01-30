@@ -544,6 +544,13 @@ class Club_Anketa_Registration {
             return $field;
         }
 
+        // On checkout page, use "Verification on Demand" - no visible verify button
+        // The verification will be triggered automatically when "Place Order" is clicked
+        // Button should remain visible on My Account / Registration pages
+        if ($is_checkout) {
+            return $field;
+        }
+
         // Get verified phone for comparison
         $verified_phone = '';
         if (is_user_logged_in()) {

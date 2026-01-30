@@ -36,6 +36,7 @@
     var resendCountdown = 60;
     var pendingFormSubmit = false;
     var currentPhoneField = null; // Track the phone field that triggered verification
+    var pendingCheckoutSubmit = false; // Track if we need to auto-submit checkout after verification
 
     /**
      * Initialize the SMS verification system
@@ -77,6 +78,10 @@
      * </div>
      */
     function injectVerifyButtonForWooCommerce() {
+        // Check if we're on the checkout page - use "Verification on Demand" there
+        // No visible verify button on checkout; verification triggered on "Place Order" click
+        var isCheckoutPage = $('form.checkout').length > 0;
+
         // Array of phone field selectors to target
         var phoneSelectors = [
             '#billing_phone',        // WooCommerce Checkout
@@ -90,6 +95,12 @@
             
             // Skip if not found or already has verify group
             if ($phoneInput.length === 0 || $phoneInput.closest('.phone-verify-group').length > 0) {
+                return;
+            }
+
+            // Skip #billing_phone on checkout page - "Verification on Demand" flow handles this
+            // The verify button should NOT appear on checkout; modal triggers on "Place Order" click
+            if (isCheckoutPage && selector === '#billing_phone') {
                 return;
             }
 
@@ -291,8 +302,9 @@
 
     /**
      * Update submit button enabled/disabled states based on verification
-     * Applies to: Checkout, My Account Edit Address/Details, WooCommerce Registration
+     * Applies to: My Account Edit Address/Details, WooCommerce Registration
      * NOTE: Anketa form (.club-anketa-form) does NOT require verification - submission is allowed without it
+     * NOTE: Checkout uses "Verification on Demand" - button stays enabled, verification triggers on click
      */
     function updateSubmitButtonStates() {
         // Find all forms with phone verification (including edit-address form and registration)
@@ -316,9 +328,10 @@
             var isAccountForm = $form.hasClass('woocommerce-EditAccountForm') || $form.hasClass('edit-address');
             var isWcRegistration = $form.hasClass('woocommerce-form-register') || $form.hasClass('register');
             
-            // Only Checkout, Account, and WooCommerce Registration forms require verification
+            // Checkout uses "Verification on Demand" - don't disable button, let click handler manage it
+            // Only Account and WooCommerce Registration forms require verification via button disable
             // Anketa form is explicitly excluded from verification requirement
-            var requiresVerification = !isAnketaForm && (isCheckout || isAccountForm || isWcRegistration || $form.find('.phone-verify-group').length > 0);
+            var requiresVerification = !isAnketaForm && !isCheckout && (isAccountForm || isWcRegistration || $form.find('.phone-verify-group').length > 0);
 
             if (requiresVerification && phoneValid && !phoneVerified) {
                 // Phone is filled but not verified - disable submit
@@ -423,6 +436,13 @@
             return handleFormSubmit(e, $(this));
         });
 
+        // WooCommerce Checkout: Intercept "Place Order" button click for "Verification on Demand"
+        // This provides a seamless UX where users don't see a verify button,
+        // but if phone is unverified, the modal appears and auto-submits after verification
+        $(document).on('click', '#place_order', function(e) {
+            return handleCheckoutPlaceOrder(e);
+        });
+
         // WooCommerce AJAX checkout interception
         $(document.body).on('checkout_error', function() {
             // Re-check verification status after WooCommerce validation errors
@@ -457,9 +477,74 @@
     }
 
     /**
+     * Handle "Place Order" button click on WooCommerce Checkout
+     * Implements "Verification on Demand" - intercepts submission if phone unverified,
+     * triggers OTP modal, and auto-submits after successful verification.
+     * 
+     * Why we intercept the button click instead of form submit:
+     * WooCommerce uses a complex AJAX checkout system. The form.checkout 'submit' event
+     * is handled by WooCommerce's checkout.js which uses AJAX. By intercepting the
+     * #place_order button click BEFORE WooCommerce's handler, we can:
+     * 1. Check verification status
+     * 2. Prevent submission if unverified
+     * 3. Open the modal
+     * 4. After successful OTP, trigger the button click again to resume checkout
+     */
+    function handleCheckoutPlaceOrder(e) {
+        var $form = $('form.checkout');
+        if ($form.length === 0) {
+            return true; // Not on checkout, allow default
+        }
+
+        var $phoneInput = $form.find('#billing_phone');
+        if ($phoneInput.length === 0) {
+            return true; // No phone field, allow submission
+        }
+
+        var currentPhone = normalizePhone($phoneInput.val());
+        
+        // If phone is empty or invalid, let WooCommerce handle validation
+        if (currentPhone.length !== 9) {
+            return true;
+        }
+
+        // If phone is already verified, allow submission
+        if (isPhoneVerified(currentPhone)) {
+            // Update verification token in form before submission
+            updateVerificationToken(verificationToken);
+            return true;
+        }
+
+        // Phone is unverified - stop submission and trigger verification modal
+        e.preventDefault();
+        e.stopImmediatePropagation(); // Stop WooCommerce's handler from running
+
+        // Store reference to phone field
+        currentPhoneField = $phoneInput;
+        
+        // Mark that we need to auto-submit after successful verification
+        pendingCheckoutSubmit = true;
+
+        // Open modal and send OTP
+        openModal(currentPhone);
+        showMessage(i18n.sendingOtp || 'Sending code...', 'info');
+
+        sendOtp(currentPhone, function() {
+            showMessage(i18n.enterCode || 'Enter the 6-digit code', 'success');
+            startResendCountdown(60);
+        }, function(errorMessage) {
+            showMessage(errorMessage || i18n.error, 'error');
+            pendingCheckoutSubmit = false; // Reset flag on error
+        });
+
+        return false;
+    }
+
+    /**
      * Handle form submission
      * Blocks submission if phone is filled but not verified
      * NOTE: Anketa form (.club-anketa-form) is allowed to submit without verification
+     * NOTE: Checkout form uses "Verification on Demand" via handleCheckoutPlaceOrder
      */
     function handleFormSubmit(e, $form) {
         var $phoneInput = $form.find('#anketa_phone_local, .phone-local, #billing_phone, #reg_billing_phone, #account_phone').first();
@@ -477,9 +562,17 @@
         var isAccountForm = $form.hasClass('woocommerce-EditAccountForm') || $form.hasClass('edit-address');
         var isWcRegistration = $form.hasClass('woocommerce-form-register') || $form.hasClass('register');
         
-        // Only Checkout, Account, and WooCommerce Registration forms require verification
+        // Checkout uses "Verification on Demand" - let handleCheckoutPlaceOrder manage it
+        // This form submit handler should allow checkout through (the button click handler does the check)
+        if (isCheckout) {
+            // Update verification token in form
+            updateVerificationToken(verificationToken);
+            return true;
+        }
+        
+        // Only Account and WooCommerce Registration forms require verification via this handler
         // Anketa form is explicitly excluded from verification requirement
-        var requiresVerification = !isAnketaForm && (isCheckout || isAccountForm || isWcRegistration || $form.find('.phone-verify-group').length > 0);
+        var requiresVerification = !isAnketaForm && (isAccountForm || isWcRegistration || $form.find('.phone-verify-group').length > 0);
 
         if (requiresVerification && currentPhone.length === 9 && !isPhoneVerified(currentPhone)) {
             e.preventDefault();
@@ -628,6 +721,20 @@
                         closeModal();
                         // Update submit button states after verification
                         updateSubmitButtonStates();
+                        
+                        // "Verification on Demand": Auto-submit checkout after successful verification
+                        // This provides seamless UX - user doesn't need to click "Place Order" again
+                        if (pendingCheckoutSubmit) {
+                            pendingCheckoutSubmit = false; // Reset flag
+                            var $checkoutForm = $('form.checkout');
+                            if ($checkoutForm.length > 0) {
+                                // Trigger the Place Order button click to resume WooCommerce checkout
+                                // Using a small delay to ensure modal is fully closed and state is updated
+                                setTimeout(function() {
+                                    $('#place_order').trigger('click');
+                                }, 100);
+                            }
+                        }
                     }, 800);
                 } else {
                     // Log detailed error info for debugging
