@@ -114,6 +114,19 @@ add_action('admin_init', function () {
         'default'           => '',
     ]);
 
+    // Email Notification Settings
+    register_setting('club_anketa_settings_group', 'club_anketa_enable_email_notification', [
+        'type'              => 'boolean',
+        'sanitize_callback' => 'rest_sanitize_boolean',
+        'default'           => false,
+    ]);
+
+    register_setting('club_anketa_settings_group', 'club_anketa_notification_email', [
+        'type'              => 'string',
+        'sanitize_callback' => 'sanitize_email',
+        'default'           => '',
+    ]);
+
     // MS Group SMS API Settings
     register_setting('club_anketa_settings_group', 'club_anketa_sms_username', [
         'type'              => 'string',
@@ -200,6 +213,59 @@ add_action('admin_init', function () {
         },
         'club_anketa_settings',
         'club_anketa_sms_api'
+    );
+
+    add_settings_field(
+        'club_anketa_enable_email_notification',
+        __('Enable email notification', 'club-anketa'),
+        function () {
+            $val = get_option('club_anketa_enable_email_notification', false);
+            echo '<label><input type="checkbox" name="club_anketa_enable_email_notification" value="1" ' . checked(1, $val, false) . ' /> ';
+            esc_html_e('Send an email notification when a new Anketa form is submitted.', 'club-anketa');
+            echo '</label>';
+        },
+        'club_anketa_settings',
+        'club_anketa_main'
+    );
+
+    add_settings_field(
+        'club_anketa_notification_email',
+        __('Notification Email Address', 'club-anketa'),
+        function () {
+            $val = esc_attr(get_option('club_anketa_notification_email', ''));
+            echo '<input type="email" name="club_anketa_notification_email" value="' . $val . '" class="regular-text" placeholder="admin@example.com" />';
+            echo ' <button type="button" class="button" id="club-anketa-send-test-email" aria-label="' . esc_attr__('Send Test Email', 'club-anketa') . '">' . esc_html__('Send Test Email', 'club-anketa') . '</button>';
+            echo '<p class="description">' . esc_html__('Email address to receive form submission notifications.', 'club-anketa') . '</p>';
+            ?>
+            <script>
+            document.getElementById('club-anketa-send-test-email').addEventListener('click', function() {
+                var btn = this;
+                btn.disabled = true;
+                var xhr = new XMLHttpRequest();
+                xhr.open('POST', '<?php echo esc_url(admin_url('admin-ajax.php')); ?>', true);
+                xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded');
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState === 4) {
+                        btn.disabled = false;
+                        try {
+                            var resp = JSON.parse(xhr.responseText);
+                            if (resp.success) {
+                                alert(resp.data);
+                            } else {
+                                alert(resp.data || '<?php echo esc_js(__('Failed to send test email.', 'club-anketa')); ?>');
+                            }
+                        } catch (e) {
+                            alert('<?php echo esc_js(__('Unexpected error.', 'club-anketa')); ?>');
+                        }
+                    }
+                };
+                xhr.send('action=club_anketa_send_test_email&_ajax_nonce=<?php echo esc_js(wp_create_nonce('club_anketa_send_test_email')); ?>');
+            });
+            </script>
+            <?php
+        },
+        'club_anketa_settings',
+        'club_anketa_main'
     );
 
     add_settings_field(
