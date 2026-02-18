@@ -47,6 +47,9 @@ class Club_Anketa_Registration {
         add_action('wp_ajax_club_anketa_verify_otp', [$this, 'ajax_verify_otp']);
         add_action('wp_ajax_nopriv_club_anketa_verify_otp', [$this, 'ajax_verify_otp']);
 
+        // Admin AJAX: Send test email
+        add_action('wp_ajax_club_anketa_send_test_email', [$this, 'ajax_send_test_email']);
+
         // WooCommerce hooks
         add_action('woocommerce_review_order_before_submit', [$this, 'checkout_sms_consent']);
         add_action('woocommerce_edit_account_form', [$this, 'account_sms_consent']);
@@ -868,6 +871,22 @@ class Club_Anketa_Registration {
             delete_transient('otp_verified_' . $local_digits);
         }
 
+        // Send email notification to admin if enabled
+        if (get_option('club_anketa_enable_email_notification', false)) {
+            $notification_email = sanitize_email(get_option('club_anketa_notification_email', ''));
+            if (is_email($notification_email)) {
+                $subject = __('New SMS Consent - Anketa', 'club-anketa');
+                /* translators: %1$s: first name, %2$s: last name, %3$s: local phone number */
+                $message = sprintf(
+                    __('User %1$s %2$s, phone number: %3$s, now agrees to receive SMS. Context: Anketa', 'club-anketa'),
+                    $data['anketa_first_name'],
+                    $data['anketa_last_name'],
+                    $local_digits
+                );
+                wp_mail($notification_email, $subject, $message);
+            }
+        }
+
         // Redirect to print page
         $url = home_url('/signature-terms/?user_id=' . absint($user_id)); // Optional: go to terms first
         $url = home_url('/print-anketa/?user_id=' . absint($user_id));   // Default: go to anketa
@@ -928,6 +947,33 @@ class Club_Anketa_Registration {
     public function send_user_notification($user_id) {
         if ($user_id > 0 && function_exists('wp_new_user_notification')) {
             wp_new_user_notification($user_id, null, 'user');
+        }
+    }
+
+    /**
+     * AJAX handler: Send a test email to the saved notification address.
+     */
+    public function ajax_send_test_email() {
+        check_ajax_referer('club_anketa_send_test_email');
+
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(__('Permission denied.', 'club-anketa'));
+        }
+
+        $to = sanitize_email(get_option('club_anketa_notification_email', ''));
+        if (!is_email($to)) {
+            wp_send_json_error(__('Please save a valid notification email address first.', 'club-anketa'));
+        }
+
+        $subject = __('Club Anketa - Test Email', 'club-anketa');
+        $message = __('This is a test email from the Club Anketa plugin. Notifications are working correctly.', 'club-anketa');
+
+        $sent = wp_mail($to, $subject, $message);
+        if ($sent) {
+            /* translators: %s: recipient email address */
+            wp_send_json_success(sprintf(__('Test email sent to %s.', 'club-anketa'), $to));
+        } else {
+            wp_send_json_error(__('Failed to send test email. Please check your mail configuration.', 'club-anketa'));
         }
     }
 
